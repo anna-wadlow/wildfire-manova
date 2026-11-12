@@ -1,0 +1,317 @@
+---
+title: "Small Fires, Big Data"
+subtitle: "MANOVA vs. Six ANOVAs on California Wildfires"
+author: "Anna Wadlow"
+thanks: "Project repository available at: https://github.com/anna-wadlow/wildfire-manova"
+date: today
+date-format: long
+format: pdf
+number-sections: true
+number-depth: 3
+bibliography: references.bib
+nocite: |
+  @*
+---
+
+```{r}
+#| echo: false
+#| output: false
+library(ggplot2)
+library(tidyverse)
+fires <- read.csv("257_fires_data.csv")
+fires_j <- read.csv('257_fires_data_orig.csv')
+fires_j$size <- factor(fires_j$size_group3, levels = c("small", "medium", "large"))
+V <- c("max_temp_c", "min_rh", "wind_speed", "erc", "elev_m", "slope_deg")
+USE_TRANSFORMATIONS <- TRUE
+if (USE_TRANSFORMATIONS) {
+  fires$slope_deg  <- log1p(fires$slope_deg)
+  fires$min_rh     <- sqrt(fires$min_rh)
+  fires$wind_speed <- log1p(fires$wind_speed)
+  fires$elev_m     <- sqrt(pmax(fires$elev_m, 0))
+}
+```
+
+# Introduction {#sec-intro}
+
+California wildfires range from a small part of an acre to hundreds of thousands of acres, and a natural question to ask is whether the conditions at the time of discovery differ between fires that stay small and fires that become large. Those conditions are measured through several sources at once including weather (temperature, humidity, wind, fuel dryness) and terrain (slope, elevation). This project asks whether the mean weather and terrain at discovery differ among small, medium, and large fires. To try to answer this question, we compare univariate one-way ANOVA, which tests one variable at a time, with one-way MANOVA, which tests all variables jointly.
+
+We use $215{,}265$ California fires discovered from 2000 to 2024 in the FPA FOD database [@firedata]. Each fire is joined to gridMET weather data [@weatherdata] from the day before discovery and to USGS 3DEP elevation and slope [@terraindata]. Fires are grouped by their final size as small (under 100 acres; $n = 211{,}096$), medium (100–999; $n = 2,902$), or large (1,000 or more; $n = 1,267$).
+
+We fit a one-way MANOVA on the six responses (slope, ERC, minimum relative humidity, maximum temperature, elevation, wind speed) and compare it with six separate one-way ANOVAs on the same data. Skewed variables are transformed first, and we then check the assumptions of both methods.
+
+The size groups differ jointly as seen through the MANOVA results (Pillai’s trace = $0.0116$, $p<2.2\times10^{-16}$) and on every variable, seen through the ANOVA results. Larger fires start on steeper, higher terrain and on hotter, drier days, while wind speed differs only trivially. The effects are small. Fire size group explains under $1\%$ of the variation in any variable. On the full data both approaches reject the null hypothesis, so their $p$-values cannot be distinguished, and the comparison rests on what each method uses and reports. This motivates the extensions in @sec-ext.
+
+# Data {#sec-data}
+## Fire Records {#sec-fire}
+
+The Fire Program Analysis fire-occurrence database (FPA FOD) compiles federal, state, and local wildfire reports for the United States from 1992 to 2024, representing about 209 million acres burned [@firedata]. Each record requires a discovery date, a final fire size in acres, and a point location at least as precise as one square mile. The compilers performed basic error checking and deduplication. We use California fires discovered from 2000 to 2024 and take each fire’s latitude, longitude, discovery date, and final size.
+
+## Weather Data {#sec-weather}
+
+gridMET provides daily surface meteorological data on a \~4 km ($1/24^\circ$) grid covering the contiguous United States from 1979 to the present [@weatherdata]. For the grid cell containing each fire, we use daily maximum temperature ($^\circ C$, converted from Kelvin), daily minimum relative humidity (%), wind speed (m/s), and the Energy Release Component (ERC), a fire-danger index that rises as fuels dry.
+
+## Terrain Data {#set-terrain}
+
+The US Geological Survey 3D Elevation Program provides elevation rasters at 1 arc-second (about 30 m) resolution, distributed in $1^\circ$ tiles [@terraindata]. For each fire, we read the tile containing its coordinates and took the elevation (m) of the 30 m cell at the fire’s location. FPA FOD coordinates are only precise to about a square mile, so we computed slope (degrees) from an elevation surface smoothed with a 51 × 51 cell moving average (about 1.5 km). Slope therefore describes the steepness of the surrounding terrain, not of the ground at the exact point.
+
+## Data Cleaning {#sec-cleaning}
+
+Extraction from all three data sources was done in Python. We checked for duplicate IDs and impossible values and converted dates. The weather date is the day before discovery, so weather details precede the fire. Size groups come from final size in acres: small (under 100), medium (100–999), and large (1,000 or more). The final data contain $N = 215{,}265$ fires: $211{,}096$ small, $2,902$ medium, and $1,267$ large.
+
+### Variables and Transformations {#sec-transform}
+
+@tbl-means gives group means in the original units.
+
+```{r}
+#| label: tbl-means
+#| echo: false
+#| tbl-cap: "Group means of the six variables in their original units."
+library(dplyr)
+library(knitr)
+
+tab1 <- fires_j |>
+  mutate(size = factor(size_group3, levels = c("small", "medium", "large"),
+                       labels = c("Small", "Medium", "Large"))) |>
+  group_by(Group = size) |>
+  summarise(n = n(),
+            `Slope (°)`     = mean(slope_deg),
+            ERC             = mean(erc),
+            `Min RH (%)`    = mean(min_rh),
+            `Max temp (°C)` = mean(max_temp_c),
+            `Elev. (m)`     = mean(elev_m),
+            `Wind (m/s)`    = mean(wind_speed))
+
+kable(tab1, digits = c(0, 0, 2, 1, 1, 1, 0, 2), format.args = list(big.mark = ","), longtable=FALSE)
+```
+
+Slope, elevation, minimum humidity, and wind speed are all right-skewed, and their spread grows with their mean. Since ANOVA and MANOVA assume normality and equal variance (covariance for MANOVA) across groups, we apply a $log(1+x)$ transformation to slope and wind speed and a square root transformation to minimum humidity and elevation (after setting negative elevations to 0). Both transformations help with the long right tail. Temperature and ERC are mildly left-skewed, so log or square root would make them worse, and we leave them unchanged. After transforming, absolute skewness is at most $0.75$ for every variables (0.65 for the transformed ones) (@fig-dens). All analyses use the transformed values, so conclusions should be evaluated on the transformed scale.
+
+```{r}
+#| label: fig-dens
+#| echo: false
+#| fig-width: 9
+#| fig-height: 5.5
+#| fig-cap: "Distributions of the six analysis variables by size group (after transformation)."
+library(tidyverse)
+
+vars <- c("slope_deg", "erc", "min_rh", "max_temp_c", "elev_m", "wind_speed")
+strip_labels <- c(slope_deg = "log(1 + slope)", erc = "ERC", min_rh = "sqrt(min RH)",
+                  max_temp_c = "Max temp (\u00b0C)", elev_m = "sqrt(elevation)",
+                  wind_speed = "log(1 + wind)")
+
+sizes <- c("small", "medium", "large")
+n_by  <- table(fires_j$size_group3)[sizes]
+size_labels <- paste0(c("Small", "Medium", "Large"), " (n = ",
+                      formatC(as.integer(n_by), big.mark = ",", format = "d"), ")")
+
+dens_long <- fires_j |>
+  mutate(slope_deg  = log1p(slope_deg),
+         wind_speed = log1p(wind_speed),
+         min_rh     = sqrt(min_rh),
+         elev_m     = sqrt(pmax(elev_m, 0)),
+         size       = factor(size_group3, levels = sizes, labels = size_labels)) |>
+  pivot_longer(cols = all_of(vars), names_to = "measure", values_to = "values") |>
+  mutate(measure = factor(measure, levels = vars, labels = strip_labels[vars]))
+
+cols <- c("#6baed6", "#2171b5", "#08306b")
+ggplot(dens_long, aes(x = values, colour = size, fill = size)) +
+  geom_density(alpha = 0.15, linewidth = 0.8) +
+  scale_colour_manual(values = cols) + scale_fill_manual(values = cols) +
+  scale_x_continuous(n.breaks = 5) +
+  facet_wrap(~ measure, scales = "free", ncol = 3) +
+  labs(x = NULL, y = NULL, fill = NULL, colour = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom", axis.text.y = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
+        panel.spacing.x = unit(1.5, "lines"),
+        strip.text = element_text(face = "bold", hjust = 0))
+```
+
+# Methods {#sec-methods}
+
+Our study evaluates univariate one-way analysis of variance (ANOVA) and multivariate one-way analysis of variance (MANOVA). Both are omnibus tests and a significant result only indicates that an effect exists somewhere in the model, not where.
+
+## ANOVA {#sec-anova}
+
+To discuss univariate one-way ANOVA we introduce some notation. We assume $g$ independent random samples from a normal distribution $X_{\ell 1},\ldots, X_{\ell, n_\ell} \underset {iid} {\sim} N(\mu_{\ell}, \sigma^2)$, $\ell=1,2,\ldots, g$, where $\mu_{\ell}$ is the population mean for group $\ell$. The samples are assumed to have the same variance $\sigma^2$. We write $\mu_{\ell} = \mu + \tau_{\ell}$, an overall mean $\mu$ plus some treatment effect $\tau_\ell$ for group $\ell$. To enforce one unique solution to $\mu_{\ell} = \mu + \tau_{\ell}$, we impose the constraint $\sum_{\ell=1}^g n_\ell\tau_\ell=0$.
+
+We test the null hypothesis that the mean values for each group are equal, $H_0: \mu_1=\cdots=\mu_g$, or $H_0:\tau_1=\tau_2=\cdots=\tau_g=0$, against the alternative that at least one group mean differs.
+
+We are effectively asking whether the variance between group means is large compared to the random noise within groups. We utilize the total sum of squares, which can be split as $SS_{tr} + SS_{res} = SS_{tot}$ where $SS_{tr}$, the treatment sum of squares (between group), and $SS_{res}$, the residual sum of squares (within group), can be expressed as
+
+$$
+\begin{aligned}
+SS_{tr} = {\sum_{\ell=1}^{g} n_\ell(\overline{x}_\ell - \overline{x})^2}, \qquad
+SS_{res} = {\sum_{\ell=1}^{g}\sum_{j=1}^{n_\ell}(x_{\ell j} - \overline{x}_\ell)^2} \\
+\end{aligned}
+$$
+
+Dividing $SS_{tr}$ and $SS_{res}$ by their respective degrees of freedom, $g-1$ and $\sum_{\ell=1}^g n_\ell-g$, gives the averaged variances, $MS_{tr}$ and $MS_{res}$, respectively.
+
+For hypothesis testing, we compute the F-value $F^* = {MS_{tr}}/{MS_{res}}$ for comparison to a critical value. A small $F^*$ means our signal is buried in the noise, while a large $F^*$ leads us to reject $H_0$. The decision rule can be summarized as: 
+$$
+\begin{aligned}
+\textrm{If } F^*&\leq F_{1-\alpha;g-1, \sum n_\ell-g}\textrm{, we fail to reject }H_0,\\
+\textrm{If } F^*&> F_{1-\alpha;g-1, \sum n_\ell-g}\textrm{, we reject }H_0
+\end{aligned}
+$$ 
+For our data, $g=3$ and $N=215{,}265$, so each of the six ANOVAs uses $F_{(2,\,215{,}262)}$.
+
+## One-Way MANOVA {#sec-manova}
+
+MANOVA generalizes ANOVA to $p$ responses measured together. Each observation is now a vector, $\mathbf{X}_{\ell 1}, \ldots, \mathbf{X}_{\ell n_\ell} \underset {iid} {\sim} N_p(\boldsymbol{\mu}_{\ell}, \Sigma)$, with $\boldsymbol{\mu}_\ell = \boldsymbol{\mu} + \boldsymbol{\tau}_\ell$ and $\sum_\ell n_\ell\boldsymbol{\tau}_\ell = \boldsymbol{0}$. We test the null hypothesis that the population mean vectors are equal, $H_0: \boldsymbol{\tau}_1 = \cdots = \boldsymbol{\tau}_g = \boldsymbol{0}$. For our study, $p=6$ and $g=3$.
+
+In the multivariate form, the sums of squares become matrices. $$
+\begin{aligned}
+\boldsymbol{B} = {\sum_{\ell=1}^{g} n_\ell(\overline{\mathbf{x}}_\ell - \overline{\mathbf{x}})(\overline{\mathbf{x}}_\ell - \overline{\mathbf{x}})^\top }\qquad \boldsymbol{W}={\sum_{\ell=1}^{g}\sum_{j=1}^{n_\ell}(\mathbf{x}_{\ell j} - \overline{\mathbf{x}}_\ell)(\mathbf{x}_{\ell j} - \overline{\mathbf{x}}_\ell)^\top}
+\end{aligned}
+$$ The diagonal entries of $\boldsymbol{B}$ and $\boldsymbol{W}$ are the six univariate $SS_{tr}$ and $SS_{res}$. The off-diagonal entries are cross-products showing how the variables move together. This is additional information that the MANOVA uses and the ANOVA does not produce.
+
+As our sum of squares are now organized into matrices, our test statistics are now functions of the nonzero eigenvalues, $\theta_1 \geq \cdots \geq \theta_s$ of $\mathbf W^{-1/2}\mathbf B\mathbf W^{-1/2}$, where $s\leq \min(p,g-1)$. ($s$ in our test is 2.) Each eigenvalue is the ratio of the between-group to within-group variation along one linear combination of the variables. The first combination is the direction in which the groups separate most, the second is the next best direction uncorrelated with the first, and so on. We introduce two ways to combine the $\theta_i$ into a single summary number.
+
+$$
+\Lambda^*=\prod_{i=1}^s\frac{1}{1+\theta_i}=\frac{|\mathbf W|}{|\mathbf B+\mathbf W|} \text{(Wilks' lambda)},\qquad 
+V=\operatorname{tr}\left[\mathbf{B}(\mathbf{B}+\mathbf{W})^{-1}\right]=\mathbf{\sum}_{i=1}^s\frac{\theta_i}{1+\theta_i}\text{(Pillai's trace)}
+$$
+
+Wilks' lambda compares within-group variation to total variation, with values lying between 0 and 1. A small $\Lambda^*$ is evidence against $H_0$. In Pillai's trace, each term $\frac{\theta_i}{1+\theta_i}$ is the share of variation in the direction $i$ explained by the group. $V$ ranges from 0 to $s$ and a large $V$ is evidence against $H_0$. Both are converted to approximate F statistics, and we reject $H_0$ when the resulting $p$-value is below our chosen $\alpha$.
+
+## Assumptions of Data Structure for ANOVA and MANOVA {#sec-assumptions}
+
+```{r}
+#| echo: false
+#| output: false
+fires$cell <- paste(round(fires$LATITUDE *24), round(fires$LONGITUDE *24))
+key <- paste(fires$cell, fires$weather_date)
+shared <- key %in% names(which(table(key) > 1))
+n_groups <- tapply(as.character(fires$size), key, function(s) length(unique(s)))
+sum(n_groups > 1)
+
+# Fires sharing exact coordinates
+pt <- paste(fires$LATITUDE, fires$LONGITUDE)
+same_xy <- duplicated(pt) | duplicated(pt, fromLast = TRUE)
+```
+
+Both methods rely on the following assumptions about the data structure. [@johnson2007applied, sec. 6.4]
+
+1.  **Independence of Observations**: Independent random samples both within and between groups.
+
+- Independence cannot be tested directly, so we look for structure that could break it. Fires in the same gridMET cell on the same weather date share identical weather. This applies to `r sprintf("%.1f%%", mean(shared)*100)` of fires (`r round(100*tapply(shared, fires$size, mean), 1)[[3]]`% small, `r round(100*tapply(shared, fires$size, mean), 1)[[2]]`% medium, and `r round(100*tapply(shared, fires$size, mean), 1)[[1]]`% large). Only `r sum(n_groups > 1)` of those cell-dates contain more than one group size, so dependence between groups through weather is minimal. Terrain is clustered by location. Since fire coordinates are reported to about a square mile, `r round(100 * mean(same_xy), 1)`% of fires share exact coordinates with another, and so have the same elevation and slope. This is most common among small fires (\~$25\%$) and least common among large fires (\~$7\%$). The independence assumptions is not fully met.
+
+- We keep every fire, since deduplicating would mostly remove small fires and change what the small group represents. Full-data $p$-values are therefore too optimistic, so we emphasize effect sizes and list resampling checks as an extension (@sec-ext).
+
+2.  **Common Variance or Covariance**: The groups should share the same spread. For ANOVA, a common variance $\sigma^2$ and for MANOVA, a common covariance matrix $\Sigma$. The covariance matrix records how the variables move together, so the correlations between variables must also be similar across groups.
+
+- After transforming, we check the ratios of the largest and smallest standard deviations per variable-group. A ratio of 1 means identical spread in all three groups. The smallest ratio is 1.07 (wind) and the largest 1.26 (minimum relative humidity), so we are not too concerned about the equal variance assumption. To evaluate the group correlation matrix differences, we check the absolute difference between all pairs of variables and find the largest gap is 0.19. Given our large sample size, Box's $M$ test, which can be used to check for equal variance-covariance across groups, would be overly sensitive and was not used. The rough, descriptive checks applied suggest fairly equal variance and covariance between our groups.
+
+3.  **Normality or Multivariate Normality**: For ANOVA, the dependent variable within each group should be normally distributed. For MANOVA, the dependent variables across groups should be multivariate normal.
+
+- To assess this assumption, we first look at the skewness of the transformed variables, with 0 being perfectly symmetric, positive being a long right tail, and negative being a long left tail. The fire data is naturally skewed, which motivated transforming certain variables and resulted in max absolute skewness of 0.65 for the transformed variables and 0.75 for temperature and ERC.
+
+- To check multivariate normality, we see how closely the squared Mahalanobis distances follow a chi-square distribution with 6 degrees of freedom. If the data were multivariate normal, only 0.1% of fires would have a squared Mahalanobis distance beyond the 99.9% $\chi^2_6$ cutoff (22.5). We find 0.43%, 0.72%, and 1.03% (small, medium, large), down from 1.79%, 1.52%, and 1.34% before transforming. The MANOVA p-values depend on the sample means being approximately normal, and while our underlying data is not perfectly multivariate normal, our data's large sample size allows us to rely on the central limit theorem to relax the normality assumption.
+
+4.  MANOVA also requires responses to not be multicollinear.
+
+- The strongest correlation we observe is ERC with minimum humidity (−0.76), which is high but not concerningly so. We also calculated the variance inflation factor, which estimates how well a variable can be predicted from the others. The highest value was 2.97, which is acceptable.
+
+## Method Comparison {#sec-compare}
+
+We apply both methods to the same dataset. The six ANOVAs test each variable separately and are judged at the Bonferroni-adjusted significance level $0.05/6\approx0.0083$, which keeps the chance of any false positive near 5%. The MANOVA is a single test at $0.05$, using Pillai’s trace as our primary statistic, with Wilks’ lambda as a check. With over 215,000 fires, even small group differences produce tiny p-values, so we also report effect sizes: $\eta^2 = \frac{SS_{tr}}{SS_{tot}}$, the share of each variable’s variance explained by size group, and $V/s$, Pillai’s trace divided by $s = min(p, g−1)$, which gives the multivariate analogue of $\eta^2$. With $N=215{,}265$ we expect both methods to reject, so our comparison will look at what each method tells us rather than which one rejects.
+
+## Software Used {#sec-software}
+
+Data extraction used Python [@python] with packages `rasterio`, `xarray`, `requests`, `pandas`, `numpy`, and `scipy`. All analyses used R [@r] with functions `manova()`, `summary.aov`, and libraries `ggplot2` and `tidyverse`.
+
+# Results {#sec-results}
+
+The MANOVA rejects our null hypothesis that all three mean vectors are equal. [@tbl-results] presents the MANOVA results alongside the six individual ANOVAs.
+
+```{r}
+#| label: model-setup
+#| include: false
+library(tidyverse)
+
+DATA_FILE <- "/Users/annawadlow/Documents/SJSU_MS/fa26-Math251-Statistical-and-Machine-Learning-Classification/project/fires_ca_weather_terrain_joint_0024.csv"
+V <- c("slope_deg", "erc", "min_rh", "max_temp_c", "elev_m", "wind_speed")
+p <- length(V)
+
+fires <- read.csv(DATA_FILE) |>
+  mutate(size = factor(size_group3, levels = c("small", "medium", "large")),
+         slope_deg  = log1p(slope_deg),
+         wind_speed = log1p(wind_speed),
+         min_rh     = sqrt(min_rh),
+         elev_m     = sqrt(pmax(elev_m, 0))) |>
+  drop_na(all_of(V))
+
+fit     <- manova(as.matrix(fires[, V]) ~ size, data = fires)
+fit_sum <- summary(fit, test = "Pillai")
+s       <- min(p, nlevels(fires$size) - 1)
+```
+
+```{r}
+#| label: tbl-results
+#| tbl-cap: "MANOVA and the six one-way ANOVAs by fire size group"
+#| echo: false
+#| message: false
+library(knitr)
+library(kableExtra)
+
+# take variable names from the fit so labels always match the rows
+aov_list <- summary.aov(fit)
+names(aov_list) <- sub("^ *Response ", "", names(aov_list))
+anova_results <- map_dfr(aov_list, .id = "variable", \(a)
+  tibble(F = a[1, "F value"], df2 = a[2, "Df"], p = a[1, "Pr(>F)"],
+         eta2 = a[1, "Sum Sq"] / sum(a[, "Sum Sq"])))
+
+labels <- c(slope_deg = "Slope", erc = "ERC", min_rh = "Min RH",
+            max_temp_c = "Max temp", elev_m = "Elevation", wind_speed = "Wind")
+fmt_p <- function(x) ifelse(x < 2.2e-16, "<2e-16",
+                            sub("e-0", "e-", formatC(x, format = "e", digits = 1)))
+pillai <- fit_sum$stats[1, ]
+
+results_tbl <- tibble(
+  Test = c(sprintf("MANOVA (Pillai V = %.4f)", pillai["Pillai"]), unname(labels[anova_results$variable])),
+  F    = sprintf("%.1f", c(pillai["approx F"], anova_results$F)),
+  df   = c(sprintf("12, %s", format(pillai["den Df"], big.mark = ",")),
+           sprintf("2, %s", format(anova_results$df2, big.mark = ","))),
+  p    = c(fmt_p(pillai["Pr(>F)"]), fmt_p(anova_results$p)),
+  `Variance explained` = sprintf("%.2f%%", 100 * c(pillai["Pillai"] / s, anova_results$eta2))
+)
+
+kable(results_tbl, align = "lrrrr", booktabs = TRUE, linesep = "") |>
+  kable_styling(latex_options = "hold_position") |>
+  row_spec(1, bold = TRUE) |>
+  footnote(general = "Variance explained is $V/s$ for the MANOVA and eta-squared for each ANOVA.",
+           general_title = "Note: ", footnote_as_chunk = TRUE, escape = FALSE,
+           threeparttable = TRUE)
+```
+
+A common process is to follow up a significant MANOVA with separate ANOVAs at the usual $\alpha = 0.05$, which does not control the overall Type I error rate. With six tests, the chance of at least one false positive is about $26\%$ ($1-0.95^6$). To account for this, we judge the ANOVAs against a Bonferroni-corrected cutoff of $0.05/6 \approx 0.0083$. All six tests are below this, so our conclusion is the same, but the MANOVA is a single test of all six variables together that does not rely on the correction.
+
+We see that slope and ERC have the highest $\eta^2$ and separate the groups most strongly, while wind separates them barely at all. The tiny $p$-value reflects the large sample size and not necessarily a meaningful difference. From [@tbl-means], we see that larger fires are on steeper and higher terrain and on hotter, drier days with higher ERC. All effects are small, with group explaining under $1\%$ of the variation in each variable. In the multivariate test, $V/s = 0.58\%$ which means that, on average, across the two directions where the groups can differ ($s = 2$), the fire size group accounts for about $0.58\%$ of the variation. Wilks' lambda also reports a significant result with $\Lambda^*=0.988, F(12,\, 430,514)=208.9,\, p< 2.2 \times 10^{-16}$. The three size groups differ significantly in their multivariate means, but the differences are small, as seen by $V/s = 0.58\%$ and Wilks' $1-\Lambda \approx 1.2 \%$. The groups explain only a small share of the multivariate variation.
+
+# Discussion {#sec-disc}
+
+## Key Findings {#sec-findings}
+
+We found fires that become large start on steeper, higher terrain and on hotter, drier days with higher fuel dryness, while wind barely distinguishes the groups. The differences are statistically significant but small. MANOVA and the six ANOVAs reach the same conclusion on the full data, which holds with Wilks' lambda and the Bonferroni-corrected ANOVA cutoff. MANOVA gives one joint test that accounts for the correlation among the six variables, and the ANOVAs say which variables differ. With over $215{,}000$ fires, the differences should be considered through the effect sizes rather than the raw $p$-values.
+
+## Potential Weaknesses {#sec-weaknesses}
+
+There are a handful of weaknesses that limit the strength of this study.
+
+- Independence isn’t fully met: many fires share weather dates, grid cells, and exact coordinates, and slope is smoothed over about 1.5 km, so the $p$-values are optimistic.
+
+- Weather is a single-day snapshot at 4 km resolution.
+
+- Results are on the transformed scale, making interpretability more challenging.
+
+- The tails are heavier than normal indicating that our data is not normally distributed.
+
+## Extensions {#sec-ext}
+
+- *Subsampling*. As every method rejects with $215{,}265$ fires, repeatedly drawing small samples from the full data and recording how often each method rejects would be an interesting extension to consider for this study. The size labels would then be shuffled so no real difference exists, and the false-positive rate would be recorded. This would compare MANOVA with unadjusted and Bonferroni-adjusted ANOVAs.
+- *Pairwise MANOVAs*. We could also explore evaluating three two-group MANOVAs, small–medium, medium–large, and small–large, each judged at the Bonferroni level $0.05/3$. This extension could say more precisely which groups differ.
+
+\newpage
+# References {#sec-ref}
